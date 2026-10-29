@@ -563,8 +563,12 @@ for _id, _line in (('forza-horizon-4', 'env.MADEIRA_OPTIN_DLLS = dxva2,gamingtcu
     assert presets[_id]['line_builds'][_i] == (620, 1000000000), (_id, presets[_id]['line_builds'])
 # Round 620, after the Discord reports: two 64-bit/32-bit Direct3D 11 fixes that need build 620's DXMT. F1 2020 is 64-bit, so its line
 # selects d3d11-src.dll (the only 64-bit d3d11.dll with BCD's patches); Need for Speed: The Run is 32-bit and needs only the switch.
+# Build 623: F1 2020 adds env.MADEIRA_PAUSE_IN_BACKGROUND = 1 (version 2).
 for _id, _line in (('f1-2020', 'env.MADEIRA_D3D11_SRC = 1'), ('need-for-speed-the-run', 'env.MADEIRA_BUFFER_RTV_EMPTY = 1')):
-    assert presets[_id]['version'] == 1 and presets[_id]['lines'][2:] == ['env.MADEIRA_EC_HOOK_TRACE = 0', _line], (_id, presets[_id])
+    if _id == 'f1-2020':
+        assert presets[_id]['version'] == 2 and presets[_id]['lines'][2:] == ['env.MADEIRA_EC_HOOK_TRACE = 0', _line, 'env.MADEIRA_PAUSE_IN_BACKGROUND = 1'], (_id, presets[_id])
+    else:
+        assert presets[_id]['version'] == 1 and presets[_id]['lines'][2:] == ['env.MADEIRA_EC_HOOK_TRACE = 0', _line], (_id, presets[_id])
     assert presets[_id]['line_builds'][presets[_id]['lines'].index(_line)] == (620, 1000000000), (_id, presets[_id]['line_builds'])
 # Resident Evil 3's program name is shared with another project's re3.exe: only beside the RE Engine's data file.
 assert presets['resident-evil-3']['match']['programs'] == [{'name': 're3.exe', 'beside': 're_chunk_000.pak'}], presets['resident-evil-3']['match']
