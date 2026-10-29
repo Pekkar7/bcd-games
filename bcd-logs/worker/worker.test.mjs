@@ -3,15 +3,18 @@
 // BCD Material: additional terms under GPL-3.0 section 7 apply; see LICENSE-BCD.md.
 // FORK-ONLY: test for the Cloudflare Worker. Never in a PR to upstream.
 
-import { describe, it, expect } from "node:test";
 import worker from "./worker.js";
 
-describe("BCD log intake worker (placeholder)", () => {
-	it("exports INTAKE constant", () => {
-		expect(worker.INTAKE).toBe("madeira-bcd/2");
-	});
+// Simple test - verify exports
+const intake = worker.INTAKE;
+const hasFetch = typeof worker.default?.fetch === "function";
 
-	it("has a fetch handler", () => {
-		expect(typeof worker.default.fetch).toBe("function");
-	});
-});
+if (intake !== "madeira-bcd/2") {
+	console.error("FAIL: INTAKE constant mismatch:", intake);
+	process.exit(1);
+}
+if (!hasFetch) {
+	console.error("FAIL: default export missing fetch handler");
+	process.exit(1);
+}
+console.log("PASS: worker exports INTAKE and has fetch handler");
