@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright 2026 thebcd69 (BCD)
+# BCD Material: additional terms under GPL-3.0 section 7 apply; see LICENSE-BCD.md.
+# FORK-ONLY: this is the Cloudflare Worker config for BCD's log intake. Never in a PR to upstream.
+
+name = "bcd-logs"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+[observability]
+enabled = true
+
+[metrics]
+enabled = true
+
+# Hourly trim of old logs
+crons = ["17 * * * *"]
+
+[[r2_buckets]]
+binding = "LOGS"
+bucket_name = "bcd-logs"
