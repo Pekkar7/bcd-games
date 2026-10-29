@@ -23,6 +23,9 @@ enum BCDDllComponents {
     static let shadowKey = "env.MADEIRA_APP_DLL_SHADOW"
     static let overridesKey = "env.WINEDLLOVERRIDES"
 
+    /// Per-game DLL overrides (game-specific WINEDLLOVERRIDES entries, JSON array of DLLOverride structs)
+    static let gameOverridesKey = "setup.dll-overrides"
+
     private static func numbered(_ prefix: String, _ range: ClosedRange<Int>) -> [String] { range.map { "\(prefix)\($0).dll" } }
 
     static let all: [BCDDllComponent] = [
@@ -72,6 +75,76 @@ enum BCDDllComponents {
         let set = Set(shadow)
         return component.names.contains { set.contains($0) }
     }
+}
+
+// MARK: - DLL Override (per-game)
+
+/// A per-game DLL override entry. Written as JSON to the game's config.
+struct BCDDLLOverride: Codable, Equatable, Identifiable {
+    var id: String { dllName }
+    var dllName: String
+    var mode: OverrideMode
+    var note: String?
+
+    enum OverrideMode: String, Codable, CaseIterable, Equatable {
+        case builtin = "b"
+        case native = "n"
+        case builtinNative = "b,n"
+        case nativeBuiltin = "n,b"
+        case disable = ""
+
+        var display: String {
+            switch self {
+            case .builtin: return "Builtin (Wine)"
+            case .native: return "Native (Windows)"
+            case .builtinNative: return "Builtin → Native fallback"
+            case .nativeBuiltin: return "Native → Builtin fallback"
+            case .disable: return "Disabled"
+            }
+        }
+
+        var short: String { rawValue }
+    }
+}
+
+// MARK: - Runtime Verification
+
+/// A runtime requirement detected for a game.
+struct BCDRuntimeRequirement: Equatable, Identifiable, Codable {
+    var id: String { name }
+    let name: String
+    let category: Category
+    let requiredFiles: [String]
+    let installURL: URL?
+    let licenseURL: URL?
+    var status: Status = .unknown
+    var installedVersion: String?
+    var installPath: String?
+
+    enum Category: String, Equatable, Codable { case vcRuntime, directX, dotNet, openAL, vulkan, physX, other }
+    enum Status: String, Equatable, Codable { case unknown, notNeeded, missing, installed, outdated, corrupted }
+}
+
+// MARK: - Audio Diagnostics
+
+/// An audio diagnostic check result.
+struct BCDAudioDiagnostic: Equatable, Identifiable {
+    var id: String { name }
+    let name: String
+    let category: Category
+    var status: Status = .unknown
+    var detail: String
+    var action: Action?
+
+    enum Category: Equatable { case dll, submix, device, files, config, driver }
+    enum Status: Equatable { case unknown, ok, warning, error, notApplicable }
+
+    struct Action: Equatable {
+        let label: String
+        let kind: Kind
+        enum Kind: Equatable { case openSettings, runCommand(String), openLog, copyToClipboard(String) }
+    }
+}
 
     /// The shadow list with the component taken to Wine's own (`wine` true: the names `shipped` in the game's folder are added)
     /// or given back to the game (all of the component's names leave the list). Names of other components and the player's

@@ -1012,6 +1012,14 @@ struct BCDGamePending: Equatable {
     private var checkTimeout: Task<Void, Never>?
     /// The DLC chooser ("Choose DLC…" on the question) while it is open.
     @Published private(set) var chooser: BCDDLCChooser?
+    /// DLL Picker data for presenting the DLL override picker sheet.
+    @Published private(set) var dllPickerData: BCDDLLPickerData?
+
+    struct BCDDLLPickerData {
+        let gameFolder: URL
+        let winePrefix: URL
+        let existingOverrides: [BCDDLLOverride]
+    }
 
     init(gameID: String, backend: BCDGameDetailBackend?) {
         self.gameID = gameID
@@ -1094,6 +1102,50 @@ struct BCDGamePending: Equatable {
         chooser = nil
         guard let game, let offer = details.dlcOffer else { return }
         pending = offerPending(open.place, offer, game)
+    }
+
+    // MARK: DLL Picker
+
+    /// Present the DLL picker for adding a DLL override.
+    func presentDLLPicker() {
+        guard let game, let entry = entry(for: game) else { return }
+        let drive = BCDGameSetup.drive
+        let gameFolder = BCDGameSetup.installFolder(entry).map { BCDFixPaths.onDisk(base: drive, parts: $0.split(separator: "/").map(String.init)) }
+        guard let gameFolder else { return }
+        let winePrefix = drive
+        // Read existing overrides from profile
+        let profile = GameProfile(windowsPath: entry.windowsPath)
+        var existingOverrides: [BCDDLLOverride] = []
+        if let jsonData = profile.get(BCDGameSetupPage.dllOverridesKey)?.data(using: .utf8),
+           let overrides = try? JSONDecoder().decode([BCDDLLOverride].self, from: jsonData) {
+            existingOverrides = overrides
+        }
+        dllPickerData = BCDDLLPickerData(gameFolder: gameFolder, winePrefix: winePrefix, existingOverrides: existingOverrides)
+    }
+
+    /// Called when the DLL picker sheet is dismissed.
+    func dllPickerDismissed() {
+        dllPickerData = nil
+    }
+
+    /// The game's library entry.
+    func entry(for game: BCDGame) -> LibraryEntry? {
+        let library = LibraryModel.shared
+        switch BCDLiveID.parse(game.id) {
+        case .steam(let appID)?:
+            if let installed = SteamGamesModel.shared.games.first(where: { $0.id == appID }) {
+                return library.steamEntry(installed, title: game.title)
+            }
+            return library.entries.first { $0.steamAppID == appID }
+        case .local(let id)?:
+            return library.entries.first { $0.id == id } ?? (id == LibraryEntry.desktopID ? LibraryEntry.desktopEntry : nil)
+        case nil:
+            if let product = BCDLiveStore.gogProduct(game.id) {
+                guard BCDGOG.enabled, let id = BCDGOG.shared.installs[product]?.entryID else { return nil }
+                return library.entries.first { $0.id == id }
+            }
+            return nil
+        }
     }
 
     /// The wait ran out: the game installs alone.
@@ -1439,6 +1491,23 @@ struct BCDGamePage: View {
                                       back: { model.chooserBack() })
                         .transition(.opacity)
                 }
+                if let picker = model.dllPickerData, let game = model.game {
+                    BCDDLLPickerView(
+                        gameFolder: picker.gameFolder,
+                        winePrefix: picker.winePrefix,
+                        existingOverrides: picker.existingOverrides,
+                        onPick: { override in
+                            let encoder = JSONEncoder()
+                            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                            if let data = try? encoder.encode(override),
+                               let json = String(data: data, encoding: .utf8) {
+                                model.request(.set("setup.dll-overrides.add", json))
+                            }
+                            model.dllPickerDismissed()
+                        }
+                    )
+                    .transition(.opacity)
+                }
                 hintBar(m, beside: options != nil && !phoneUpright && model.pending == nil)
             }
         }
@@ -1470,6 +1539,16 @@ struct BCDGamePage: View {
             }
             installButtons()
         }
+        // The DLL picker: it holds the controller (layer "game.dllPicker.") and starts with the ring on its first row.
+        .onChange(of: model.dllPickerData != nil) { _, open in
+            if open {
+                focus.openLayer(Self.dllPickerLayer)
+                focus.focused = "game.dllPicker.search"
+            } else {
+                focus.closeLayer(Self.dllPickerLayer)
+            }
+            installButtons()
+        }
         .onChange(of: model.game?.state) { _, _ in
             model.reload()
             installButtons()
@@ -1487,12 +1566,14 @@ struct BCDGamePage: View {
         .onChange(of: layout) { _, now in phoneUpright = now == .phonePortrait }
         .animation(.easeOut(duration: 0.2), value: model.pending)
         .animation(.easeOut(duration: 0.2), value: model.chooser != nil)
+        .animation(.easeOut(duration: 0.2), value: model.dllPickerData != nil)
     }
 
     static let layer = "game."
     static let panelLayer = "game.panel."
     static let askLayer = "game.ask."
     static let dlcLayer = BCDDLCChooserView.layer
+    static let dllPickerLayer = "game.dllPicker."
 
     private func appeared() {
         phoneUpright = layout == .phonePortrait
@@ -2419,7 +2500,11 @@ private struct BCDGameOptionsList: View {
             row.detail = [setting.value, setting.note].compactMap { $0 }.joined(separator: "\n")
             row.still = true
         case .action:
-            row.run = { model.request(.set(id, "run")) }
+            if id == "setup.dll-overrides.add" {
+                row.run = { model.presentDLLPicker() }
+            } else {
+                row.run = { model.request(.set(id, "run")) }
+            }
         }
         return row
     }

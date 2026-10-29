@@ -606,7 +606,53 @@ struct LibraryEntry: Codable, Identifiable {
         madeira_set_vsync_locked(effectiveFPSMode)
         // This game's own lines; a launch without any unsets the previous game's.
         do {
-            let pairs = try MadeiraConfig.applyGame(gameConfigText)
+            // Build full game config including DLL overrides from the game's profile
+            var fullConfig = gameConfigText ?? ""
+            // Read per-game DLL overrides from the game's config file
+            let profile = GameProfile(windowsPath: windowsPath)
+            var gameOverrides: [BCDDLLOverride] = []
+            if let overridesJson = profile.get("setup.dll-overrides"),
+               let data = overridesJson.data(using: .utf8),
+               let overrides = try? JSONDecoder().decode([BCDDLLOverride].self, from: data) {
+                gameOverrides = overrides
+            }
+            // Read global WINEDLLOVERRIDES from bcd.cfg
+            var globalEntries: [String] = []
+            let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let bcdCfgURL = docsURL.appendingPathComponent("bcd.cfg")
+            if let bcdCfgText = try? String(contentsOf: bcdCfgURL, encoding: .utf8) {
+                for line in bcdCfgText.split(separator: "\n") {
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+                    if trimmed.hasPrefix("env.WINEDLLOVERRIDES"), let eq = trimmed.firstIndex(of: "=") {
+                        let value = String(trimmed[trimmed.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+                        globalEntries = BCDDllComponents.entries(value)
+                        break
+                    }
+                }
+            }
+            // Merge: start with global entries, then apply game overrides (game wins for specific DLLs)
+            var mergedEntries: [String] = globalEntries
+            for gameOverride in gameOverrides {
+                let mode = gameOverride.mode.rawValue
+                let dllName = gameOverride.dllName.lowercased()
+                // Remove any existing entry for this DLL from merged
+                mergedEntries.removeAll { entry in
+                    let entryDllPart = entry.split(separator: "=").first?.lowercased() ?? ""
+                    return entryDllPart == dllName || entryDllPart.split(separator: ",").contains { $0.lowercased() == dllName }
+                }
+                // Add game override
+                if !mode.isEmpty {
+                    mergedEntries.append("\(gameOverride.dllName)=\(mode)")
+                } else {
+                    mergedEntries.append("\(gameOverride.dllName)=")
+                }
+            }
+            if !mergedEntries.isEmpty {
+                let overrideLine = "env.WINEDLLOVERRIDES = " + mergedEntries.joined(separator: ";")
+                if !fullConfig.isEmpty { fullConfig += "\n" }
+                fullConfig += overrideLine
+            }
+            let pairs = try MadeiraConfig.applyGame(fullConfig.isEmpty ? nil : fullConfig)
             if !pairs.isEmpty {
                 LogStore.shared.log("[game-cfg] " + pairs.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " "))
             }

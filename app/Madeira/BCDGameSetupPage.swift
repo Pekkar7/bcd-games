@@ -78,6 +78,44 @@ struct BCDGameSetupState: Equatable {
     var savesBlocked: String?
     /// What an action last said, by setting id.
     var notes: [String: String] = [:]
+
+    // MARK: New sections (phase 1)
+
+    /// Launch arguments for Steam and non-Steam games
+    var launchArgs = BCDSetupLaunchArgsState()
+    /// Per-game DLL overrides
+    var dllOverrides = BCDSetupDLLOverridesState()
+    /// Runtime verification state
+    var runtimeVerify = BCDSetupRuntimeVerifyState()
+    /// Audio diagnostics state
+    var audioDiag = BCDSetupAudioDiagState()
+}
+
+/// Launch arguments state (Steam vs standalone)
+struct BCDSetupLaunchArgsState: Equatable {
+    var steamLaunchOptions = ""     // read from Steam, displayed read-only
+    var bcdDockExtraArgs = ""       // appended after Steam's options
+    var standaloneArgs = ""         // for non-Steam games
+}
+
+/// Per-game DLL overrides state
+struct BCDSetupDLLOverridesState: Equatable {
+    var overrides: [BCDDLLOverride] = []
+    var lastScan: Date?
+}
+
+/// Runtime verification state
+struct BCDSetupRuntimeVerifyState: Equatable {
+    var requirements: [BCDRuntimeRequirement] = []
+    var lastScan: Date?
+    var isScanning = false
+}
+
+/// Audio diagnostics state
+struct BCDSetupAudioDiagState: Equatable {
+    var diagnostics: [BCDAudioDiagnostic] = []
+    var lastRun: Date?
+    var isRunning = false
 }
 
 enum BCDGameSetupPage {
@@ -86,6 +124,11 @@ enum BCDGameSetupPage {
     static let fexGroup = "fex"
     static let fixesGroup = "fixes"
     static let desktopGroup = "desktop"
+    // New sections
+    static let launchArgsGroup = "launchArgs"
+    static let dllOverridesGroup = "dllOverrides"
+    static let runtimeVerifyGroup = "runtimeVerify"
+    static let audioDiagGroup = "audioDiag"
 
     static let version = "setup.version"
     static let componentsPrefix = "setup.dll."
@@ -103,6 +146,11 @@ enum BCDGameSetupPage {
     static let desktopTheme = "setup.desktop-theme"
     static let desktopWallpaper = "setup.desktop-wallpaper"
     static let wallpaperPicture = "setup.desktop-picture"
+    // New keys
+    static let steamLaunchOptionsKey = "setup.launch.steamOptions"
+    static let bcdDockExtraArgsKey = "setup.launch.bcdDockExtra"
+    static let standaloneArgsKey = "setup.launch.standaloneArgs"
+    static let dllOverridesKey = "setup.dll-overrides"
 
     static func fixID(_ number: Int) -> String { fixPrefix + String(number) }
     static func fixNumber(_ id: String) -> Int? { id.hasPrefix(fixPrefix) ? Int(id.dropFirst(fixPrefix.count)) : nil }
@@ -290,11 +338,173 @@ enum BCDGameSetupPage {
                                    headline: words.isEmpty ? "As BCD sets it" : words.joined(separator: " · "))
     }
 
+    // MARK: Launch Arguments
+
+    static func launchArgsSection(_ s: BCDGameSetupState) -> BCDGameSettingGroup {
+        let a = s.launchArgs
+        let isSteam = !a.steamLaunchOptions.isEmpty
+        var list: [BCDGameSetting] = []
+
+        if isSteam {
+            list.append(BCDGameSetting(
+                id: steamLaunchOptionsKey, title: "Steam launch options", kind: .text(prompt: "-novid -high"), value: a.steamLaunchOptions,
+                note: s.notes[steamLaunchOptionsKey] ?? "Read from Steam's launch configuration for this game. This is what Steam passes to the game; you cannot edit it here.",
+                heading: "Steam game (BCD Dock)"))
+            list.append(BCDGameSetting(
+                id: bcdDockExtraArgsKey, title: "BCD Dock extra arguments", kind: .text(prompt: "-dx11"), value: a.bcdDockExtraArgs,
+                note: s.notes[bcdDockExtraArgsKey] ?? "Extra arguments appended after Steam's launch options. From the next start."))
+        } else {
+            list.append(BCDGameSetting(
+                id: standaloneArgsKey, title: "Command line arguments", kind: .text(prompt: "%command% -windowed"), value: a.standaloneArgs,
+                note: s.notes[standaloneArgsKey] ?? "The full command line passed to the game's executable. %command% expands to the game's executable path. From the next start.",
+                heading: "Non-Steam game (standalone .exe)"))
+        }
+        return BCDGameSettingGroup(id: launchArgsGroup, title: "Launch arguments", symbol: "terminal", settings: list,
+                                   note: isSteam ? "Steam launch options come from Steam's cloud config. BCD Dock extra arguments are appended after them." : "The game runs directly without Steam. Use %command% for the executable path.",
+                                   headline: isSteam ? (a.steamLaunchOptions.isEmpty ? "From Steam" : "Steam options + extras") : (a.standaloneArgs.isEmpty ? "Defaults" : "Custom"))
+    }
+
+    // MARK: DLL Overrides
+
+    static func dllOverridesSection(_ s: BCDGameSetupState) -> BCDGameSettingGroup {
+        let o = s.dllOverrides
+        var list: [BCDGameSetting] = []
+        list.append(BCDGameSetting(
+            id: "setup.dll-overrides.add", title: "Add DLL override", kind: .action,
+            note: "Choose a DLL from the game folder or Wine prefix, then set its override mode (Builtin, Native, Builtin→Native, Native→Builtin, Disabled)."))
+
+        for (index, override) in o.overrides.enumerated() {
+            let id = "setup.dll-overrides.\(index)"
+            let modeChoices = BCDDLLOverride.OverrideMode.allCases.map { BCDGameChoice(value: $0.rawValue, label: $0.display) }
+            list.append(BCDGameSetting(
+                id: id, title: override.dllName,
+                kind: .choice(modeChoices),
+                value: override.mode.rawValue, defaultValue: "",
+                note: s.notes[id] ?? (override.note ?? "Override mode for \(override.dllName). Builtin = Wine's implementation; Native = Windows DLL from the game folder or system32."),
+                heading: index == 0 ? "Active overrides" : nil))
+            // Remove action for this override
+            list.append(BCDGameSetting(
+                id: "setup.dll-overrides.\(index).remove", title: "Remove \(override.dllName)", kind: .action,
+                note: "Remove this DLL override entirely.",
+                destructive: true))
+        }
+
+        let on = o.overrides.count
+        return BCDGameSettingGroup(id: dllOverridesGroup, title: "DLL overrides", symbol: "shippingbox.and.arrow.backward", settings: list,
+                                   note: "These overrides are per-game and written to the game's config. At launch they are merged into WINEDLLOVERRIDES alongside bcd.cfg's global overrides.",
+                                   headline: on == 0 ? "None" : "\(on) override\(on == 1 ? "" : "s")")
+    }
+
+    // MARK: Runtime Verification
+
+    static func runtimeVerifySection(_ s: BCDGameSetupState) -> BCDGameSettingGroup {
+        let r = s.runtimeVerify
+        var list: [BCDGameSetting] = []
+
+        let scanTitle = r.isScanning ? "Scanning…" : "Scan now"
+        list.append(BCDGameSetting(
+            id: "setup.runtime.scan", title: scanTitle, kind: .action,
+            note: s.notes["setup.runtime.scan"] ?? "Scans the game's executable and DLLs for import dependencies to detect required runtimes (VC++, DirectX, .NET, OpenAL, Vulkan, PhysX).",
+            heading: "Detected runtimes"))
+
+        if r.isScanning {
+            list.append(BCDGameSetting(id: "setup.runtime.progress", title: "Scanning", kind: .info, value: "Analyzing imports…"))
+        } else if r.requirements.isEmpty {
+            list.append(BCDGameSetting(id: "setup.runtime.none", title: "No scan yet", kind: .info, value: "Tap \"Scan now\" to detect what runtimes this game needs."))
+        } else {
+            for (index, req) in r.requirements.enumerated() {
+                let statusIcon: String
+                switch req.status {
+                case .unknown: statusIcon = "?"
+                case .notNeeded: statusIcon = "○"
+                case .missing: statusIcon = "✗"
+                case .installed: statusIcon = "✓"
+                case .outdated: statusIcon = "⚠"
+                case .corrupted: statusIcon = "!"
+                }
+                let id = "setup.runtime.\(index)"
+                var note = s.notes[id] ?? "\(req.name): \(req.detail)"
+                if let ver = req.installedVersion { note += " (v\(ver))" }
+                list.append(BCDGameSetting(id: id, title: "\(statusIcon) \(req.name)", kind: .info, value: req.detail, note: note,
+                                           heading: index == 0 ? "Detected runtimes" : nil))
+            }
+            list.append(BCDGameSetting(
+                id: "setup.runtime.rescan", title: "Rescan", kind: .action,
+                note: "Run the scan again to pick up changes."))
+        }
+
+        if let last = r.lastScan {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .short
+            list.append(BCDGameSetting(id: "setup.runtime.last", title: "Last scan", kind: .info, value: formatter.string(from: last)))
+        }
+
+        return BCDGameSettingGroup(id: runtimeVerifyGroup, title: "Runtime verification", symbol: "checkmark.shield", settings: list,
+                                   note: "Shows what runtimes the game's imports require, what's installed in the prefix, and lets you verify or reinstall them.",
+                                   headline: r.requirements.isEmpty ? "Not scanned" : "\(r.requirements.filter { $0.status == .installed }.count) installed")
+    }
+
+    // MARK: Audio Troubleshooting
+
+    static func audioDiagSection(_ s: BCDGameSetupState) -> BCDGameSettingGroup {
+        let a = s.audioDiag
+        var list: [BCDGameSetting] = []
+
+        let runTitle = a.isRunning ? "Running diagnostics…" : "Run diagnostics"
+        list.append(BCDGameSetting(
+            id: "setup.audio.run", title: runTitle, kind: .action,
+            note: s.notes["setup.audio.run"] ?? "Runs a diagnostic launch with WINEDEBUG=+xaudio2,+dsound,+winmm,+pulse, checks for missing audio files, reads game INI for volume settings, and verifies the Wine audio driver.",
+            heading: "Checks"))
+
+        if a.isRunning {
+            list.append(BCDGameSetting(id: "setup.audio.progress", title: "Running", kind: .info, value: "Collecting audio diagnostics…"))
+        } else if a.diagnostics.isEmpty {
+            list.append(BCDGameSetting(id: "setup.audio.none", title: "No diagnostics yet", kind: .info, value: "Tap \"Run diagnostics\" to check audio."))
+        } else {
+            for (index, diag) in a.diagnostics.enumerated() {
+                let statusIcon: String
+                switch diag.status {
+                case .unknown: statusIcon = "?"
+                case .ok: statusIcon = "✓"
+                case .warning: statusIcon = "⚠"
+                case .error: statusIcon = "✗"
+                case .notApplicable: statusIcon = "○"
+                }
+                let id = "setup.audio.\(index)"
+                let note = s.notes[id] ?? diag.detail
+                list.append(BCDGameSetting(id: id, title: "\(statusIcon) \(diag.name)", kind: .info, value: diag.detail, note: note,
+                                           heading: index == 0 ? "Results" : nil))
+                if let action = diag.action {
+                    list.append(BCDGameSetting(id: "\(id).action", title: action.label, kind: .action, note: "Tap to apply this fix."))
+                }
+            }
+            list.append(BCDGameSetting(
+                id: "setup.audio.rerun", title: "Run again", kind: .action,
+                note: "Run diagnostics again to refresh results."))
+        }
+
+        if let last = a.lastRun {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .short
+            list.append(BCDGameSetting(id: "setup.audio.last", title: "Last run", kind: .info, value: formatter.string(from: last)))
+        }
+
+        return BCDGameSettingGroup(id: audioDiagGroup, title: "Audio troubleshooting", symbol: "speaker.wave.3", settings: list,
+                                   note: "Diagnoses missing audio: XAudio2 DLL mode, submix voice routing, audio device, game audio files, game INI volume, Wine audio driver.",
+                                   headline: a.diagnostics.isEmpty ? "Not run" : "\(a.diagnostics.filter { $0.status == .ok }.count) OK, \(a.diagnostics.filter { $0.status == .warning || $0.status == .error }.count) issues")
+    }
+
     /// The sections in the order Options lists them (after Compatibility), with the Components section reached from Windows.
     static func sections(_ s: BCDGameSetupState) -> [BCDGameSettingGroup] {
         var out = [windowsSection(s), componentsSection(s), fexSection(s)]
         if let places = savesSection(s) { out.append(places) }
         out.append(fixesSection(s))
+        out.append(launchArgsSection(s))
+        out.append(dllOverridesSection(s))
+        out.append(runtimeVerifySection(s))
+        out.append(audioDiagSection(s))
         if let desktop = desktopSection(s) { out.append(desktop) }
         return out
     }

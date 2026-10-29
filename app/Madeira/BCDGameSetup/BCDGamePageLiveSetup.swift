@@ -63,6 +63,40 @@ extension BCDGamePageLive {
             return BCDSetupSaveItem(path: root.path, label: GameSaveRules.display(root), place: place)
         }
         state.savesBlocked = Self.sessionRunning ? "Quit the game first." : nil
+
+        // Launch Arguments
+        state.launchArgs.steamLaunchOptions = values[BCDGameSetupPage.steamLaunchOptionsKey] ?? ""
+        state.launchArgs.bcdDockExtraArgs = values[BCDGameSetupPage.bcdDockExtraArgsKey] ?? ""
+        state.launchArgs.standaloneArgs = values[BCDGameSetupPage.standaloneArgsKey] ?? ""
+
+        // DLL Overrides (JSON array)
+        if let jsonData = values[BCDGameSetupPage.dllOverridesKey]?.data(using: .utf8),
+           let overrides = try? JSONDecoder().decode([BCDDLLOverride].self, from: jsonData) {
+            state.dllOverrides.overrides = overrides
+        }
+
+        // Runtime Verify (cached scan results)
+        if let jsonData = values["setup.runtime.results"]?.data(using: .utf8),
+           let requirements = try? JSONDecoder().decode([BCDRuntimeRequirement].self, from: jsonData) {
+            state.runtimeVerify.requirements = requirements
+        }
+        if let lastScanStr = values["setup.runtime.lastScan"],
+           let lastScan = ISO8601DateFormatter().date(from: lastScanStr) {
+            state.runtimeVerify.lastScan = lastScan
+        }
+        state.runtimeVerify.isScanning = values["setup.runtime.scanning"] == "1"
+
+        // Audio Diagnostics (cached results)
+        if let jsonData = values["setup.audio.results"]?.data(using: .utf8),
+           let diagnostics = try? JSONDecoder().decode([BCDAudioDiagnostic].self, from: jsonData) {
+            state.audioDiag.diagnostics = diagnostics
+        }
+        if let lastRunStr = values["setup.audio.lastRun"],
+           let lastRun = ISO8601DateFormatter().date(from: lastRunStr) {
+            state.audioDiag.lastRun = lastRun
+        }
+        state.audioDiag.isRunning = values["setup.audio.running"] == "1"
+
         var start = BCDGameStartState()
         start.plan = BCDStartPlan.read(values)
         start.swap = values[BCDStartPlan.swapKey] ?? ""
@@ -190,6 +224,81 @@ extension BCDGamePageLive {
         case let id where id.hasPrefix(BCDGameSetupPage.savePrefix):
             moveSaves(String(id.dropFirst(BCDGameSetupPage.savePrefix.count)), to: value, game: game, entry: entry, setting: id)
 
+        // MARK: DLL Overrides - dynamic rows
+        case "setup.dll-overrides.add":
+            // Add a new DLL override: value is JSON with { "dllName": "...", "mode": "...", "note": "...", "sourcePath": "..." }
+            guard !value.isEmpty,
+                  let jsonData = value.data(using: .utf8),
+                  let newOverride = try? JSONDecoder().decode(BCDDLLOverride.self, from: jsonData),
+                  BCDDllComponents.isDllName(newOverride.dllName),
+                  BCDDLLOverride.OverrideMode.allCases.contains(where: { $0.rawValue == newOverride.mode.rawValue }) else {
+                setupSay(game, setting, "Not saved: invalid override data.")
+                return true
+            }
+            // Read current overrides
+            var overrides: [BCDDLLOverride] = []
+            if let jsonData = values[BCDGameSetupPage.dllOverridesKey]?.data(using: .utf8),
+               let existing = try? JSONDecoder().decode([BCDDLLOverride].self, from: jsonData) {
+                overrides = existing
+            }
+            // Check if already exists (by dllName)
+            if overrides.contains(where: { $0.dllName.lowercased() == newOverride.dllName.lowercased() }) {
+                setupSay(game, setting, "Not saved: an override for \(newOverride.dllName) already exists.")
+                return true
+            }
+            overrides.append(newOverride)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? encoder.encode(overrides),
+               let json = String(data: data, encoding: .utf8) {
+                setupLine(entry, BCDGameSetupPage.dllOverridesKey, json)
+                setupSay(game, setting, "Added override for \(newOverride.dllName) (\(newOverride.mode.display)).")
+            }
+            return true
+
+        case let id where id.hasPrefix("setup.dll-overrides.") && id != "setup.dll-overrides.add":
+            // Dynamic row for individual override: format is "setup.dll-overrides.<index>" (mode change)
+            // or "setup.dll-overrides.<index>.remove" (remove override)
+            let prefix = "setup.dll-overrides."
+            let suffix = ".remove"
+            var indexStr = String(id.dropFirst(prefix.count))
+            var isRemove = false
+            if indexStr.hasSuffix(suffix) {
+                isRemove = true
+                indexStr = String(indexStr.dropLast(suffix.count))
+            }
+            guard let index = Int(indexStr), index >= 0 else { return true }
+
+            // Read current overrides from profile
+            guard let jsonData = values[BCDGameSetupPage.dllOverridesKey]?.data(using: .utf8),
+                  var overrides = try? JSONDecoder().decode([BCDDLLOverride].self, from: jsonData),
+                  index < overrides.count else { return true }
+
+            if isRemove {
+                let removedName = overrides[index].dllName
+                overrides.remove(at: index)
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? encoder.encode(overrides),
+                   let json = String(data: data, encoding: .utf8) {
+                    setupLine(entry, BCDGameSetupPage.dllOverridesKey, json)
+                    setupSay(game, id, "Removed override for \(removedName).")
+                }
+            } else {
+                // Mode change
+                let mode = value.trimmingCharacters(in: .whitespaces)
+                guard BCDDLLOverride.OverrideMode.allCases.contains(where: { $0.rawValue == mode }) else { return true }
+                overrides[index].mode = BCDDLLOverride.OverrideMode(rawValue: mode) ?? .builtin
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? encoder.encode(overrides),
+                   let json = String(data: data, encoding: .utf8) {
+                    setupLine(entry, BCDGameSetupPage.dllOverridesKey, json)
+                    setupSay(game, id, "Override mode updated to \(BCDDLLOverride.OverrideMode(rawValue: mode)?.display ?? mode).")
+                }
+            }
+            return true
+
         case BCDGameStartPage.delay:
             guard let n = Int(value), (0...300).contains(n) else { return true }
             setupLine(entry, BCDStartPlan.delayKey, n == 0 ? "" : String(n))
@@ -281,6 +390,98 @@ extension BCDGamePageLive {
             setupLine(entry, BCDWineDesktop.wallpaperKey, path)
             setupSay(game, setting, nil)
 
+        // MARK: Launch Arguments
+        case BCDGameSetupPage.steamLaunchOptionsKey:
+            // Steam launch options are read-only from Steam; this is just for display
+            setupSay(game, setting, nil)
+        case BCDGameSetupPage.bcdDockExtraArgsKey:
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.contains(where: { "\n\r\0".contains($0) }), text.utf8.count <= 500 else { return true }
+            setupLine(entry, BCDGameSetupPage.bcdDockExtraArgsKey, text)
+            setupSay(game, setting, nil)
+        case BCDGameSetupPage.standaloneArgsKey:
+            let text = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.contains(where: { "\n\r\0".contains($0) }), text.utf8.count <= 500 else { return true }
+            setupLine(entry, BCDGameSetupPage.standaloneArgsKey, text)
+            setupSay(game, setting, nil)
+
+        // MARK: DLL Overrides (handled via action, not direct text input)
+        case let id where id.hasPrefix("setup.dll-overrides."):
+            // Individual override rows are actions, not text fields
+            setupSay(game, id, nil)
+
+        // MARK: Runtime Verification (action-based)
+        case "setup.runtime.scan", "setup.runtime.rescan":
+            // Trigger runtime scan - launch background task to scan PE imports
+            setupLine(entry, "setup.runtime.scanning", "1")
+            setupSay(game, setting, "Scanning game for required runtimes…")
+            let drive = BCDGameSetup.drive
+            let entryForScan = entry
+            let gameFolder = BCDGameSetup.installFolder(entryForScan).map { BCDFixPaths.onDisk(base: drive, parts: $0.split(separator: "/").map(String.init)) }
+            Task { [weak self] in
+                defer { self?.setupLine(entryForScan, "setup.runtime.scanning", "") }
+                guard let gameFolder else {
+                    self?.setupSay(game, "setup.runtime.scan", "Could not find game folder.")
+                    self?.onChange?()
+                    return
+                }
+                let results = await BCDScanGameRuntimes(gameFolder: gameFolder, drive: drive)
+                guard let self else { return }
+                // Store results in profile
+                let profile = GameProfile(windowsPath: entryForScan.windowsPath)
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? encoder.encode(results),
+                   let json = String(data: data, encoding: .utf8) {
+                    self.setupLine(entryForScan, "setup.runtime.results", json)
+                    self.setupLine(entryForScan, "setup.runtime.lastScan", ISO8601DateFormatter().string(from: Date()))
+                    self.setupSay(game, "setup.runtime.scan", "Scan complete: \(results.count) runtime\(results.count == 1 ? "" : "s") detected.")
+                } else {
+                    self.setupSay(game, "setup.runtime.scan", "Scan failed to save results.")
+                }
+                self.onChange?()
+            }
+            return true
+
+        // MARK: Audio Diagnostics (action-based)
+        case "setup.audio.run", "setup.audio.rerun":
+            // Trigger audio diagnostics - launch game with WINEDEBUG and parse log
+            setupLine(entry, "setup.audio.running", "1")
+            setupSay(game, setting, "Running audio diagnostics…")
+            let drive = BCDGameSetup.drive
+            let documents = LibraryModel.documents
+            let entryForDiag = entry
+            Task { [weak self] in
+                defer { self?.setupLine(entryForDiag, "setup.audio.running", "") }
+                let result = await BCDRunAudioDiagnostics(entry: entryForDiag, drive: drive, documents: documents)
+                guard let self else { return }
+                // Store results in profile
+                let profile = GameProfile(windowsPath: entryForDiag.windowsPath)
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? encoder.encode(result.diagnostics),
+                   let json = String(data: data, encoding: .utf8) {
+                    self.setupLine(entryForDiag, "setup.audio.results", json)
+                    self.setupLine(entryForDiag, "setup.audio.lastRun", ISO8601DateFormatter().string(from: Date()))
+                    if let logPath = result.logPath {
+                        self.setupLine(entryForDiag, "setup.audio.logPath", logPath.path)
+                    }
+                    let issues = result.diagnostics.filter { $0.status == .warning || $0.status == .error }.count
+                    if issues > 0 {
+                        self.setupSay(game, "setup.audio.run", "Diagnostics complete: \(issues) issue\(issues == 1 ? "" : "s") found. Tap items for fix actions.")
+                    } else {
+                        self.setupSay(game, "setup.audio.run", "Diagnostics complete: all checks passed.")
+                    }
+                } else {
+                    self.setupSay(game, "setup.audio.run", "Diagnostics failed to save results.")
+                }
+                if !result.errors.isEmpty {
+                    self.setupSay(game, "setup.audio.run", (self.setupNoteText(game, "setup.audio.run") ?? "") + "\nErrors: " + result.errors.joined(separator: "; "))
+                }
+                self.onChange?()
+            }
+            return true
+
         default:
             break
         }
@@ -353,6 +554,10 @@ extension BCDGamePageLive {
         all[setting] = text
         BCDGameSetupNotes.shared.notes[game.id] = all
         onChange?()
+    }
+
+    fileprivate func setupNoteText(_ game: BCDGame, _ setting: String) -> String? {
+        BCDGameSetupNotes.shared.notes[game.id]?[setting]
     }
 }
 
