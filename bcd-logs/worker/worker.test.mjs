@@ -3,11 +3,12 @@
 // BCD Material: additional terms under GPL-3.0 section 7 apply; see LICENSE-BCD.md.
 // FORK-ONLY: test for the Cloudflare Worker. Never in a PR to upstream.
 
-import worker from "./worker.js";
+import { INTAKE } from "./worker.js";
+import workerDefault from "./worker.js";
 
 // Simple test - verify exports
-const intake = worker.INTAKE;
-const hasFetch = typeof worker.default?.fetch === "function";
+const intake = INTAKE;
+const hasFetch = typeof workerDefault?.fetch === "function";
 
 if (intake !== "madeira-bcd/2") {
 	console.error("FAIL: INTAKE constant mismatch:", intake);
