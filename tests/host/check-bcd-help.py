@@ -220,8 +220,13 @@ else:
         start_at = page_text.index("// MARK: - The page's rules")
         end_at = page_text.index("// MARK: - Opening the page")
         (src / "Rules.swift").write_text("import Combine\nimport Foundation\nimport SwiftUI\n\n" + page_text[start_at:end_at])
-        for n in ("BCDStore.swift", "BCDGameDLC.swift", "BCDHelpCore.swift", "BCDGameHelp.swift", "BCDReadinessCore.swift", "BCDGraphicsScan.swift"):
-            shutil.copy(APP / n, src / n)
+        for n in ("BCDStore.swift", "BCDGameDLC.swift", "BCDHelpCore.swift", "BCDGameHelp.swift", "BCDReadinessCore.swift", "BCDGraphicsScan.swift",
+                    "SteamGames.swift", "Library.swift", "BCDLiveStore.swift", "BCDGOG/BCDGOG.swift"):
+            src_path = APP / n
+            if src_path.exists():
+                shutil.copy(src_path, src / src_path.name)
+            else:
+                print(f"NOTE: {n} not found, skipping")
         shutil.copy(R / "tests/host/bcd_help_checks.swift", src / "Harness.swift")
         exe = t / "help"
         b = subprocess.run(["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-o", str(exe)] + sorted(str(p) for p in src.glob("*.swift")),
