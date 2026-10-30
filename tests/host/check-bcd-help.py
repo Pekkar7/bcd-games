@@ -221,12 +221,34 @@ else:
         end_at = page_text.index("// MARK: - Opening the page")
         (src / "Rules.swift").write_text("import Combine\nimport Foundation\nimport SwiftUI\n\n" + page_text[start_at:end_at])
         for n in ("BCDStore.swift", "BCDGameDLC.swift", "BCDHelpCore.swift", "BCDGameHelp.swift", "BCDReadinessCore.swift", "BCDGraphicsScan.swift",
-                    "SteamGames.swift", "Library.swift", "BCDLiveStore.swift", "BCDGOG/BCDGOG.swift"):
+                    "SteamGames.swift", "Library.swift"):
             src_path = APP / n
             if src_path.exists():
                 shutil.copy(src_path, src / src_path.name)
             else:
                 print(f"NOTE: {n} not found, skipping")
+
+        # Create stubs for engine-bound files that import UIKit or have unavailable dependencies
+        # The Rules.swift section only needs: BCDLiveStore.shared.play, BCDLiveStore.gogProduct, BCDGOG.enabled, BCDGOG.shared.installs
+        (src / "BCDLiveStore.swift").write_text("""// Stub for host compilation test
+import Foundation
+
+@MainActor final class BCDLiveStore {
+    static let shared = BCDLiveStore()
+    func play(_ game: Any) {}
+    static func gogProduct(_ id: String) -> String? { nil }
+}
+""")
+
+        (src / "BCDGOG.swift").write_text("""// Stub for host compilation test
+import Foundation
+
+@MainActor final class BCDGOG {
+    static let shared = BCDGOG()
+    static var enabled: Bool { true }
+    var installs: [String: Any] = [:]
+}
+""")
         shutil.copy(R / "tests/host/bcd_help_checks.swift", src / "Harness.swift")
         exe = t / "help"
         b = subprocess.run(["xcrun", "swiftc", "-parse-as-library", "-swift-version", "5", "-o", str(exe)] + sorted(str(p) for p in src.glob("*.swift")),
