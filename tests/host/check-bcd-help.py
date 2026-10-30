@@ -221,7 +221,7 @@ else:
         end_at = page_text.index("// MARK: - Opening the page")
         (src / "Rules.swift").write_text("import Combine\nimport Foundation\nimport SwiftUI\n\n" + page_text[start_at:end_at])
         for n in ("BCDStore.swift", "BCDGameDLC.swift", "BCDHelpCore.swift", "BCDGameHelp.swift", "BCDReadinessCore.swift", "BCDGraphicsScan.swift",
-                    "SteamGames.swift", "Library.swift"):
+                    "SteamGames.swift"):
             src_path = APP / n
             if src_path.exists():
                 shutil.copy(src_path, src / src_path.name)
@@ -229,7 +229,20 @@ else:
                 print(f"NOTE: {n} not found, skipping")
 
         # Create stubs for engine-bound files that import UIKit or have unavailable dependencies
-        # The Rules.swift section only needs: BCDLiveStore.shared.play, BCDLiveStore.gogProduct, BCDGOG.enabled, BCDGOG.shared.installs
+        # The Rules.swift section needs: LibraryModel.shared, SteamGamesModel.shared, BCDLiveStore.shared.play, BCDLiveStore.gogProduct, BCDGOG.enabled, BCDGOG.shared.installs
+        (src / "Library.swift").write_text("""// Stub for host compilation test
+import Foundation
+
+@MainActor final class LibraryModel {
+    static let shared = LibraryModel()
+    var games: [Any] = []
+    func steamEntry(_ installed: Any, title: String) -> Any? { nil }
+    var entries: [Any] = []
+    static let desktopID = "desktop"
+    static let desktopEntry: Any? = nil
+}
+""")
+
         (src / "BCDLiveStore.swift").write_text("""// Stub for host compilation test
 import Foundation
 
